@@ -1,0 +1,21 @@
+#!/var/jb/usr/bin/zsh
+set -e
+PREFIX=/var/jb
+LIB=$PREFIX/usr/local/lib/pi-native
+BIN=$PREFIX/usr/local/bin
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    # runtime/ is fetched and built at install time, so dpkg does not know about
+    # it and would leave ~81 MB behind.
+    rm -rf "$LIB/runtime" "$LIB/runtime.old"
+    # (N) is zsh's null-glob qualifier. Without it an unmatched pattern is an
+    # error, and under set -e that makes the ordinary case -- no interrupted
+    # install to clean up -- fail the removal.
+    rm -rf "$LIB"/.build.*(N)
+    # Hand `pi` back to whatever owned it before us.
+    if [ -L "$BIN/pi" ]; then
+        rm -f "$BIN/pi"
+        [ -e "$BIN/pi-legacy" ] && mv "$BIN/pi-legacy" "$BIN/pi" || true
+    fi
+fi
+exit 0

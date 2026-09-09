@@ -1,0 +1,35 @@
+Package: com.andi.pi-coding-agent
+Name: Pi Coding Agent
+Version: @VERSION@
+Architecture: iphoneos-arm64
+Maintainer: andi <tafilajandi@gmail.com>
+Author: Earendil Works (upstream) / iOS port by andi
+Section: Development
+Priority: optional
+Depends: zsh, bash, python3, ldid, curl, tar, coreutils, ripgrep, fd, uikittools, firmware (>= 15.0)
+Recommends: git
+Icon: https://raw.githubusercontent.com/@REPO@/main/assets/icon.png
+Depiction: https://@PAGES@/depiction.html
+Tag: role::developer
+Description: Pi, the open-source agent harness, patched for iOS
+ Packages Pi @PI_VERSION@.
+ .
+ Pi is an open-source coding agent that talks to any model provider you have an
+ API key for -- Anthropic, OpenAI, Google, Groq, OpenRouter, a local llama.cpp
+ and around twenty more. Credentials live in ~/.pi/agent/auth.json or in the
+ usual environment variables, so signing in is one file and no keychain.
+ .
+ Nothing else to install: no Node.js, no npm, no JavaScript runtime. Upstream's
+ standalone build is Bun-compiled and self-contained, and this package patches
+ it to run on iOS -- Mach-O platform to iOS, a small shim linked in for the
+ libSystem symbols iOS lacks, and the macOS framework dlopen paths rewritten.
+ .
+ The shim also makes JavaScriptCore's JIT work, which iOS otherwise refuses: it
+ has no MAP_JIT and will not execute a page that is currently writable, so the
+ shim flips the JIT pool between writable and executable with mprotect.
+ .
+ The 75 MB binary is NOT redistributed here. On install this package downloads
+ the official darwin-arm64 tarball from GitHub releases, verifies it against the
+ checksum recorded when the package was built, patches and signs it on device,
+ and runs it once before installing it. Takes a few seconds and needs a network
+ connection.

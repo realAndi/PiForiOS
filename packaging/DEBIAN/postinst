@@ -1,0 +1,131 @@
+#!/var/jb/usr/bin/zsh
+# Fetch the official Pi standalone build and patch it for iOS.
+# The 75 MB binary is deliberately not shipped in this package; see control.
+set -e
+[ "$1" = "configure" ] || [ -z "$1" ] || exit 0
+
+PREFIX=/var/jb
+LIB=$PREFIX/usr/local/lib/pi-native
+BIN=$PREFIX/usr/local/bin
+PATH=$PREFIX/usr/bin:$PREFIX/bin:/usr/bin:/bin:$PREFIX/usr/sbin:$PREFIX/sbin
+export PATH
+
+. "$LIB/version.env"
+
+say() { print -- "pi-coding-agent: $*"; }
+die() { print -u2 -- "pi-coding-agent: ERROR: $*"; exit 1; }
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+    else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+# Everything below is invoked by name at some point. Sileo installs Depends
+# before running this, so a miss here means either a hand-installed .deb or a
+# package name that is wrong for this bootstrap -- both worth failing on now,
+# with the name, rather than part-way through a 31 MB download.
+missing=""
+for tool in curl tar python3 ldid df awk mktemp install; do
+    command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+done
+command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 \
+    || missing="$missing sha256sum"
+[ -z "$missing" ] || die "missing required tool(s):$missing
+Install them and try again -- on a Procursus bootstrap:
+  sudo apt install zsh coreutils curl tar python3 ldid"
+
+# The 31 MB tarball, the ~81 MB it extracts to, the 75 MB patched copy beside
+# the original, and the outgoing install kept until the new one is in place.
+avail=$(df -k "$LIB" | tail -1 | awk '{print $4}')
+[ "${avail:-0}" -gt 500000 ] || die "need ~500MB free under $LIB, have $((avail/1024))MB"
+
+# Stage inside $LIB, not /tmp: the sandbox refuses to mmap() a dylib out of
+# /var/mobile (measured -- dyld reports "file system sandbox blocked mmap()"),
+# so the smoke test below could not load libshim.dylib from there.
+# Same filesystem also makes the swap at the end a rename rather than a copy.
+WORK=$(mktemp -d "$LIB/.build.XXXXXX")
+trap 'rm -rf "$WORK"' EXIT INT TERM
+
+say "downloading Pi $PI_VERSION (~31MB)"
+# --retry-connrefused, not just --retry: plain --retry covers timeouts and 5xx
+# but not "Couldn't connect to server", which on a phone is the ordinary way a
+# download fails -- a Wi-Fi handoff produced exactly that here, twice, and the
+# install gave up in 170 ms without a single retry.
+curl -fsSL --connect-timeout 20 --retry 3 --retry-delay 2 --retry-connrefused \
+    "$PI_URL_TARBALL" -o "$WORK/pi.tar.gz" \
+    || die "could not download $PI_URL_TARBALL
+Check the network and re-run:  sudo apt install --reinstall com.andi.pi-coding-agent"
+
+got=$(sha256_of "$WORK/pi.tar.gz")
+[ "$got" = "$PI_TARBALL_SHA256" ] || die "tarball checksum mismatch
+  expected $PI_TARBALL_SHA256
+  got      $got
+Refusing to install a build that is not the one this package was made against."
+
+tar xzf "$WORK/pi.tar.gz" -C "$WORK" || die "could not extract the tarball"
+rm -f "$WORK/pi.tar.gz"
+[ -x "$WORK/pi/pi" ] || die "no pi executable inside the tarball -- layout changed"
+
+# The tarball checksum already covers this, but the binary is the one file whose
+# exact bytes the patcher depends on, and checking it directly is what makes the
+# failure legible if upstream ever repackages a release in place.
+got=$(sha256_of "$WORK/pi/pi")
+[ "$got" = "$PI_BINARY_SHA256" ] || die "binary checksum mismatch
+  expected $PI_BINARY_SHA256
+  got      $got"
+say "checksum verified"
+
+say "patching for iOS"
+# piios_patch.py refuses if upstream added a dylib we have not vetted or dropped
+# a symbol the shim provides, rather than producing a broken binary.
+python3 "$LIB/piios_patch.py" "$WORK/pi/pi" "$WORK/pi/pi.ios" \
+    || die "patching failed -- upstream build changed shape; not installing"
+mv -f "$WORK/pi/pi.ios" "$WORK/pi/pi"
+chmod 755 "$WORK/pi/pi"
+
+ldid "-S$LIB/entitlements.plist" "$WORK/pi/pi" || die "ldid signing failed"
+
+# iOS refuses to load unsigned code ("mapped file has no cdhash"), so make sure
+# the INSTALLED shim is signed before anything else -- signing only the staged
+# copy would let the smoke test pass on a layout that is not what ends up on
+# disk. Sign in place first, then stage from it, so the test is faithful.
+ldid -S "$LIB/libshim.dylib" 2>/dev/null || true
+install -m 755 "$LIB/libshim.dylib" "$WORK/pi/libshim.dylib"
+
+say "verifying"
+out=$(cd "$WORK/pi" && HOME=$PREFIX/var/mobile BUN_JSC_useConcurrentJIT=0 \
+      GIGACAGE_ENABLED=0 PI_SKIP_VERSION_CHECK=1 ./pi --version 2>&1) \
+    || die "patched binary did not run: $out"
+case "$out" in
+    *"$PI_VERSION"*) say "verified: $out" ;;
+    *) die "unexpected --version output: $out" ;;
+esac
+
+# Swap by rename in both directions, so there is never a moment where
+# $LIB/runtime is absent or half-written. No rollback copy is kept beyond that:
+# the new tree is verified above before the old one is touched, and a reinstall
+# can always re-fetch.
+rm -rf "$LIB/runtime.old"
+[ -d "$LIB/runtime" ] && mv "$LIB/runtime" "$LIB/runtime.old"
+mv "$WORK/pi" "$LIB/runtime"
+rm -rf "$LIB/runtime.old"
+
+# Take over `pi`, keeping whatever was there as a rollback. An npm-installed pi
+# is the likely occupant, and it cannot run here (Node 22 is not on Procursus),
+# but it is not ours to delete.
+if [ -e "$BIN/pi" ] && [ ! -L "$BIN/pi" ] && [ ! -e "$BIN/pi-legacy" ]; then
+    cp -p "$BIN/pi" "$BIN/pi-legacy"
+    say "previous pi saved as pi-legacy"
+fi
+ln -sfn "$BIN/pi-native" "$BIN/pi"
+
+# Final check against the real installed layout, not the staging directory.
+# Cheap, and it is the only thing that proves what the user will actually run.
+out=$("$BIN/pi-native" --version 2>&1) || die "installed binary does not run: $out"
+
+say "installed Pi $PI_VERSION -- run: pi"
+if [ ! -r "$PREFIX/var/mobile/.pi/agent/auth.json" ]; then
+    say "Set a provider key first, e.g."
+    say "  export ANTHROPIC_API_KEY=sk-ant-...    (or run 'pi' and use /login)"
+fi
+exit 0

@@ -1,0 +1,66 @@
+#!/var/jb/usr/bin/zsh
+# Pi, the official darwin-arm64 standalone build patched to run on iOS.
+# Installed as pi-native; `pi` is a symlink to this. See the README in
+# https://github.com/realAndi/pi-port for why each of these is set.
+
+LIB=/var/jb/usr/local/lib/pi-native
+
+# GOOS-style surprise: with HOME unset, Pi writes its config to /.pi and silently
+# loses every setting between runs. A non-interactive `ssh host 'pi ...'` is
+# exactly the case that arrives without one.
+export HOME="${HOME:-/var/jb/var/mobile}"
+
+# REQUIRED. JSC's JIT pool is flipped between RW and RX with mprotect (iOS has
+# no MAP_JIT and refuses to execute a writable page). That flip is process-wide
+# where the real pthread_jit_write_protect_np is per-thread, so a background
+# compiler thread would flip the pool to RW while the main thread is executing
+# out of it -> "panic: Bus error". Compiling on the mutator thread avoids it.
+export BUN_JSC_useConcurrentJIT=0
+
+# REQUIRED. JSC reserves 64 GB aligned to 64 GB for the gigacage; iOS refuses a
+# single anonymous reservation above 4 GB (measured: 4 GB ok, 8 GB ENOMEM), so
+# the process dies at startup with "Could not allocate gigacage memory". Nothing
+# smaller is negotiable -- the size is compiled in. The warning JSC prints about
+# this is patched out of the binary, because it cannot be acted on and it is the
+# first thing a user of an interactive TUI would see.
+export GIGACAGE_ENABLED=0
+
+# APT is the updater. Pi's own check would tell an iOS user to download the
+# macOS build from GitHub releases, which cannot run here. It never overwrites
+# itself -- a Bun standalone install reports "cannot self-update" -- so this is
+# about the advice, not about protecting the install.
+#
+# `-` and not `:-`: an explicitly empty value is a deliberate "let it check",
+# so `PI_SKIP_VERSION_CHECK= pi` still works.
+export PI_SKIP_VERSION_CHECK="${PI_SKIP_VERSION_CHECK-1}"
+
+# Pi's Grep and Glob tools shell out to ripgrep and fd. It looks in its own bin
+# directory first and only then at PATH, so a macOS rg or fd left in there from
+# a run on another platform -- or from before ripgrep and fd were installed --
+# permanently shadows the working iOS ones and every search fails with a dyld
+# error. Running each one is the cheapest honest test of "can this execute
+# here", and once removed Pi finds the packaged ones on PATH and never
+# re-downloads, so this converges after a single launch.
+PI_BIN="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/bin"
+for t in "$PI_BIN/rg" "$PI_BIN/fd"; do
+    if [ -x "$t" ] && ! "$t" --version >/dev/null 2>&1; then
+        rm -f "$t"
+        print -u2 -- "pi: removed $t (not an iOS binary); using the packaged one"
+    fi
+done
+
+# Pi opens URLs -- `/login` OAuth flows, `/share`, clicked OSC 8 links -- by
+# spawning `open`, because the patched binary reports platform darwin. It reads
+# no BROWSER variable and uses no shell, so the only way in is PATH. iOS's
+# equivalent is uiopen from uikittools, and $LIB/shims/open is a symlink to it:
+# a symlink rather than a wrapper script so what gets exec'd is a signed Mach-O
+# and no shebang is involved. Prepended rather than appended because there is no
+# `open` on iOS to shadow, and the agent's own shell commands inherit it too.
+export PATH="$LIB/shims:$PATH"
+
+# runtime/ is the upstream tarball, patched: the binary plus the theme, assets,
+# docs and wasm it resolves relative to itself, and the libshim.dylib it loads
+# as @executable_path/libshim.dylib. The postinst builds it; dpkg does not know
+# about it. Exec'd by absolute path and never cd'd into, because Pi takes the
+# working directory as the project it is working on.
+exec "$LIB/runtime/pi" "$@"

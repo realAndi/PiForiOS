@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>platform-application</key>
+    <true/>
+    <key>com.apple.private.security.no-sandbox</key>
+    <true/>
+    <key>get-task-allow</key>
+    <true/>
+    <key>com.apple.private.cs.debugger</key>
+    <true/>
+    <!-- The JIT set. iOS has no MAP_JIT and will not execute a page that is
+         currently writable, so the shim flips the JIT pool with mprotect and
+         needs the process to be allowed dynamic code signing at all. See
+         README; BUN_JSC_useJIT=0 is a working fallback, but a slow one. -->
+    <key>dynamic-codesigning</key>
+    <true/>
+    <key>com.apple.private.skip-library-validation</key>
+    <true/>
+    <key>com.apple.developer.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- No keychain-access-groups. Pi keeps provider credentials in
+         ~/.pi/agent/auth.json, a plain file it writes itself, so it never
+         reaches Security.framework and asking for a keychain group would be
+         claiming access this package has no use for. -->
+</dict>
+</plist>
