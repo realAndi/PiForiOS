@@ -1,0 +1,127 @@
+{
+  "class": "DepictionTabView",
+  "minVersion": "0.1",
+  "tintColor": "#87AFAF",
+  "tabs": [
+    {
+      "class": "DepictionStackView",
+      "tabname": "Details",
+      "views": [
+        {
+          "class": "DepictionMarkdownView",
+          "useSpacing": true,
+          "useRawFormat": false,
+          "markdown": "**Pi** is an open-source coding agent that talks to whichever model provider you have an API key for — Anthropic, OpenAI, Google, Groq, OpenRouter, a local llama.cpp and around twenty more.\n\nThis packages upstream's `darwin-arm64` standalone build, patched so iOS will load and run it. There is no iOS build upstream and there cannot easily be one: the binary is Bun-compiled, and Bun has no iOS target."
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionSubheaderView",
+          "title": "What gets installed",
+          "useBoldText": true,
+          "useBottomMargin": true
+        },
+        {
+          "class": "DepictionMarkdownView",
+          "useSpacing": true,
+          "useRawFormat": false,
+          "markdown": "This package is about 16 KB. It does **not** contain Pi.\n\nOn install it downloads the official tarball from the upstream GitHub release, verifies its SHA-256, patches it on your device, signs it with `ldid`, runs it once to confirm it works, and only then installs it. Takes about six seconds and needs a network connection."
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionSubheaderView",
+          "title": "At a glance",
+          "useBoldText": true,
+          "useBottomMargin": true
+        },
+        { "class": "DepictionTableTextView", "title": "Package", "text": "com.andi.pi-coding-agent" },
+        { "class": "DepictionTableTextView", "title": "Downloads on install", "text": "31 MB" },
+        { "class": "DepictionTableTextView", "title": "Installed size", "text": "81 MB" },
+        { "class": "DepictionTableTextView", "title": "Startup", "text": "about 600 ms" },
+        { "class": "DepictionTableTextView", "title": "Tested on", "text": "iOS 17.3, Dopamine" },
+        {
+          "class": "DepictionTableButtonView",
+          "title": "Port source and write-up",
+          "action": "https://github.com/realAndi/PiForiOS",
+          "openExternal": true
+        },
+        {
+          "class": "DepictionTableButtonView",
+          "title": "Pi upstream",
+          "action": "https://github.com/earendil-works/pi",
+          "openExternal": true
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionSubheaderView",
+          "title": "Getting started",
+          "useBoldText": true,
+          "useBottomMargin": true
+        },
+        {
+          "class": "DepictionMarkdownView",
+          "useSpacing": true,
+          "useRawFormat": false,
+          "markdown": "Give it a key, then run it:\n\n`export ANTHROPIC_API_KEY=sk-ant-…`\n\n`pi`\n\nAny provider works the same way: `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and the rest. Or just run `pi` and use `/login`, which stores the key in `~/.pi/agent/auth.json`.\n\nNothing here touches the keychain, which is why this port needs no login helper of its own."
+        }
+      ]
+    },
+    {
+      "class": "DepictionStackView",
+      "tabname": "Requires",
+      "views": [
+        {
+          "class": "DepictionMarkdownView",
+          "useSpacing": true,
+          "useRawFormat": false,
+          "markdown": "- A rootless jailbreak (`/var/jb`). Tested on Dopamine.\n- iOS 15 or later, arm64. Tested on iOS 17.3.\n- A network connection during install.\n- About 500 MB free while installing, about 81 MB afterwards."
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionSubheaderView",
+          "title": "Dependencies",
+          "useBoldText": true,
+          "useBottomMargin": true
+        },
+        {
+          "class": "DepictionMarkdownView",
+          "useSpacing": true,
+          "useRawFormat": false,
+          "markdown": "zsh, bash, python3, ldid, curl, tar, coreutils, ripgrep, fd, uikittools. Sileo installs any that are missing before this one.\n\n**Node.js is not needed.** The Pi binary is Bun-compiled and self-contained.\n\nripgrep and fd are not optional extras: Pi's search tools shell out to them, and left to itself it downloads the macOS builds, which cannot run here."
+        }
+      ]
+    },
+    {
+      "class": "DepictionStackView",
+      "tabname": "Notes",
+      "views": [
+        {
+          "class": "DepictionMarkdownView",
+          "useSpacing": true,
+          "useRawFormat": false,
+          "markdown": "**Sileo is the updater.** Pi's own version check is switched off, because for a standalone build it points at the macOS download, which cannot run here."
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionMarkdownView",
+          "useSpacing": true,
+          "useRawFormat": false,
+          "markdown": "**The JIT is emulated.** iOS has no `MAP_JIT` and will not execute a page while it is writable, so a small shim flips JavaScriptCore's JIT pool between writable and executable with `mprotect`. That flip is process-wide where the real API is per-thread, so the wrapper sets `BUN_JSC_useConcurrentJIT=0`, which it requires."
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionMarkdownView",
+          "useSpacing": true,
+          "useRawFormat": false,
+          "markdown": "**JavaScriptCore's gigacage is off.** It reserves 64 GB of address space and iOS refuses any single reservation over 4 GB, so Pi would not start at all otherwise."
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionMarkdownView",
+          "useSpacing": true,
+          "useRawFormat": false,
+          "markdown": "**Clipboard and modifier keys are inert.** Pi's helpers for those are native modules that link AppKit, which iOS does not have. Pi loads them inside a `try` and carries on, so nothing breaks; the features are simply absent."
+        }
+      ]
+    }
+  ]
+}

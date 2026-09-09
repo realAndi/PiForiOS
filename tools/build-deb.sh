@@ -151,7 +151,7 @@ com.andi.pi-coding-agent ($VERSION-$REVISION) stable; urgency=low
 CHANGELOG
 chmod 644 "$DOC/changelog"
 [ -n "$GH_REPO"  ] || sed -i.bak '/^Icon:/d'      "$STAGE/DEBIAN/control"
-[ -n "$GH_PAGES" ] || sed -i.bak '/^Depiction:/d' "$STAGE/DEBIAN/control"
+[ -n "$GH_PAGES" ] || sed -i.bak '/^Native-Depiction:/d;/^SileoDepiction:/d' "$STAGE/DEBIAN/control"
 rm -f "$STAGE/DEBIAN/control.bak"
 
 install -m 755 "$ROOT/packaging/DEBIAN/postinst" "$STAGE/DEBIAN/postinst"

@@ -9,7 +9,8 @@ Priority: optional
 Depends: zsh, bash, python3, ldid, curl, tar, coreutils, ripgrep, fd, uikittools, firmware (>= 15.0)
 Recommends: git
 Icon: https://raw.githubusercontent.com/@REPO@/main/assets/icon.png
-Depiction: https://@PAGES@/depiction.html
+Native-Depiction: https://@PAGES@/depiction.json
+SileoDepiction: https://@PAGES@/depiction.json
 Tag: role::developer
 Description: Pi, the open-source agent harness, patched for iOS
  Packages Pi @PI_VERSION@.
