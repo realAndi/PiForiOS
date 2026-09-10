@@ -33,6 +33,7 @@
           "useBoldText": true,
           "useBottomMargin": true
         },
+        { "class": "DepictionTableTextView", "title": "Version", "text": "@VERSION@" },
         { "class": "DepictionTableTextView", "title": "Package", "text": "com.andi.pi-coding-agent" },
         { "class": "DepictionTableTextView", "title": "Downloads on install", "text": "31 MB" },
         { "class": "DepictionTableTextView", "title": "Installed size", "text": "81 MB" },
