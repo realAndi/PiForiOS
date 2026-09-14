@@ -181,17 +181,25 @@ sync_after_exit() {
             fi
         fi
     fi
-    # Only the last session out takes the file away. pgrep is the conservative
-    # direction in both of its failure modes: if it is missing, or if it cannot
-    # see Pi's processes, no removal happens and the next exit tries again.
-    if command -v pgrep >/dev/null 2>&1 && pgrep -f "$RUNTIME" >/dev/null 2>&1; then
-        return 0
-    fi
+    # Only the last session out takes the file away. Process enumeration needs
+    # ps -- stock iOS ships /bin/ps outside any package, so it is relied on
+    # behaviourally rather than via Depends, like libSystem -- and the match is
+    # pure zsh, so nothing beyond what is already depended on is involved. If
+    # ps is missing or errors, no removal happens: the conservative direction,
+    # and the next exit tries again.
+    local ps_out
+    ps_out="$(ps -ax -o command= -ww 2>/dev/null)" || return 0
+    local -a procs
+    procs=("${(f)ps_out}")
+    local cmdline
+    for cmdline in "${procs[@]}"; do
+        [[ "$cmdline" == *"$RUNTIME"* ]] && return 0
+    done
     rm -f "$AUTH_JSON"
     # proper-lockfile leaves auth.json.lock behind when a run is killed while
     # it holds Pi's credential lock, and a stale one blocks Pi's next credential
     # operation. Safe to remove here: a live lock would mean a running Pi, and
-    # pgrep just said there is none.
+    # the check above just said there is none.
     rm -rf "$AUTH_JSON.lock"
 }
 

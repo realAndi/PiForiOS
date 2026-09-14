@@ -6,7 +6,7 @@
 #
 #   tools/test-pi-native-sync.sh
 #
-# Exits non-zero if any check fails. Needs zsh (the wrapper), pgrep and the
+# Exits non-zero if any check fails. Needs zsh (the wrapper), ps and the
 # usual coreutils -- all present on a Mac and guaranteed on device.
 set -u
 
@@ -161,7 +161,8 @@ check "11 keychain updated from the killed child's write" '{"crashed":"left-behi
 # 12. concurrent session: another runtime/pi process visible -> file left in
 # place, but the keychain is still updated (last writer wins)
 kc_empty; printf '{"shared":"master"}' > "$STORE"; rm -f "$auth"
-# A process whose argv[0] IS the runtime path, so pgrep -f finds it.
+# A process whose argv[0] IS the runtime path, so the wrapper's ps check
+# finds it.
 ( exec -a "$LIB/runtime/pi" sleep 5 ) &
 BLOCKER=$!
 HOME="$HOME_DIR" KCS_STORE="$STORE" KCS_PI_DO=write KCS_AUTH="$auth" KCS_LOG="$KCS_LOG" \
