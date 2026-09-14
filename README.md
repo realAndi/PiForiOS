@@ -11,11 +11,12 @@ iOS's dyld will load it and JavaScriptCore's JIT will run inside it, and
 packages the patcher so the whole thing installs, updates and rolls back through
 APT like any other package.
 
-Pi talks to whatever model provider you have an API key for, and keeps that key
-in a plain file it writes itself. That makes this a much smaller port than the
-sibling [CCForiOS](https://github.com/realAndi/CCForiOS): no keychain to work
-around, no OAuth helper, no credential dance. The whole port is a Mach-O patch,
-a 68 KB shim and a wrapper that sets four environment variables.
+Pi talks to whatever model provider you have an API key for, and signs in
+through the same `pi` TUI as everywhere else. That makes this a much smaller
+port than the sibling [CCForiOS](https://github.com/realAndi/CCForiOS): no
+OAuth helper, no login command of its own. The whole port is a Mach-O patch, a
+68 KB shim, a keychain helper, and a wrapper that sets four environment
+variables and keeps the credential file off disk between runs.
 
 | | |
 |---|---|
@@ -37,8 +38,9 @@ pi
 
 Any provider Pi supports works the same way — `OPENAI_API_KEY`, `GEMINI_API_KEY`,
 `OPENROUTER_API_KEY` and about twenty more. Or run `pi` and use `/login`, which
-writes the key to `~/.pi/agent/auth.json`. Nothing here touches the keychain,
-which is the whole reason this port needs no login helper.
+stores the credential in the **iOS keychain** — see
+[Where the credential is stored](#where-the-credential-is-stored).
+Environment-variable keys are unaffected by any of it.
 
 Requirements:
 
@@ -307,8 +309,14 @@ concurrency does not. **Never drop this setting.**
 | `HOME` | defaulted to `/var/jb/var/mobile` if unset |
 | `PATH` | prefixed with `$LIB/shims`, which holds one symlink: `open` → `uiopen` |
 
-and `exec`s `/var/jb/usr/local/lib/pi-native/runtime/pi`. `libshim.dylib` must
-sit beside the binary — it is loaded as `@executable_path/libshim.dylib`.
+and runs `/var/jb/usr/local/lib/pi-native/runtime/pi` as a child. `libshim.dylib`
+must sit beside the binary — it is loaded as `@executable_path/libshim.dylib`.
+
+The child, not an `exec`d process, is deliberate: the wrapper has to outlive Pi
+to run the exit half of the credential sync (see [Where the credential is
+stored](#where-the-credential-is-stored)) and to pass the exit status through.
+With `PI_PLAINTEXT=1` there is nothing to sync and the wrapper `exec`s directly,
+as it always did. Cost when the sync is on: one idle zsh per session.
 
 ### Search: ripgrep and fd
 
@@ -332,13 +340,103 @@ the case where a copy is already there from another platform, the wrapper runs
 each one once and deletes it if it cannot execute. That converges after a single
 launch, because from then on PATH answers first.
 
-### Credentials
+### Where the credential is stored
 
-Pi keeps provider credentials in `~/.pi/agent/auth.json`, a plain file it writes
-itself, and reads the usual `*_API_KEY` environment variables. It never reaches
-Security.framework, so the entitlements ask for no keychain group — the sibling
-Claude Code port needs one and a whole login helper besides, and none of that
-applies here.
+Pi keeps provider credentials in `~/.pi/agent/auth.json`, a plain JSON file it
+reads and writes itself — on `/login`, on token refresh, whenever a provider is
+added or removed. Unlike the sibling Claude Code port, nothing here needs to do
+the OAuth flow for it, and nothing needs to translate the credential into a
+shape Pi cannot produce: Pi's own sign-in works as-is.
+
+The problem is where the file lives. On a rootless jailbreak `$HOME` is
+`/var/jb/var/mobile`, which is physically on the **preboot volume** — the same
+volume as the jailbreak itself, rebuilt on an iOS update and replaced on a
+jailbreak reinstall, and not rewritten by "Erase All Content and Settings",
+which crypto-shreds only the data volume; a preboot copy leaves with the phone.
+
+So the port owns the file's **rest state** and nothing else. Pi still reads and
+writes it exactly as upstream; the wrapper (`pi-native`) moves it around the
+run:
+
+* **before** — if the keychain holds a copy, materialise `auth.json` from it,
+  unless an identical file is already there. A leftover file that *differs* is
+  treated as newer — it is what a run that was killed before it could sync
+  wrote — and is imported into the keychain. A file holding exactly `{}` is
+  never imported over a populated keychain: that is what Pi writes when a
+  credential operation finds the file missing, so it means "there was no file",
+  not "the user logged out".
+* **after** — if `auth.json` changed, store the whole file back into the
+  keychain (last writer wins; the keychain is always updated), then remove the
+  file. Nothing with a secret sits on the preboot volume between runs.
+
+The blob is the whole `auth.json`, provider-agnostic: one generic-password item
+covers every provider at once, and the sync code never parses it. Concurrency
+is handled by removing the file only when no other `pi` process is running — an
+earlier exit stores its changes but leaves the file for the session still
+using it, and that session's exit repeats the same steps.
+
+The keychain item is created by `pi-keychain`, a small helper installed next to
+the binary: `kSecClassGenericPassword`, service
+`com.andi.pi-coding-agent.auth`, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`,
+authorized by the package's entitlements (`keychain-access-groups:
+com.andi.pi-coding-agent`). Three properties fall out of that, all of which the
+plain file lacked:
+
+* **The item lives on the data volume** (`/var/Keychains/keychain-2.db`),
+  outside `/var/jb` and the preboot volume. An iOS update or a jailbreak
+  reinstall rebuilds the jailbreak root — the package has to be reinstalled
+  either way, but the sign-in survives, for every provider at once.
+* **"Erase All Content and Settings" destroys it.** The item is wrapped in the
+  device keybag, which erase crypto-shreds. A wiped and sold phone takes no
+  credential with it; the preboot copy of a plain file would survive.
+* **It is excluded from backups and device-to-device restores**
+  (`ThisDeviceOnly`), so the credential does not ride along to another device.
+
+An `auth.json` from a previous, pre-keychain install is migrated on the first
+launch: it is imported into the keychain, used for that run, and removed at the
+end of it. If the keychain misbehaves on a given device, `PI_PLAINTEXT=1`
+restores the old behaviour — `auth.json` is the store, mode `0600`, no keychain
+involved, file left in place between runs. API keys in environment variables
+(`ANTHROPIC_API_KEY` and the rest) never touch `auth.json` or the keychain and
+work exactly as upstream.
+
+### What the keychain does and does not protect against
+
+A stored `/login` credential can act as its account on every provider it
+covers, so it is worth being precise about where the protection ends:
+
+| scenario | plain `auth.json` (the old rest state) | keychain (now) |
+|---|---|---|
+| "Erase All Content and Settings", then the phone is sold | **survives** — erase crypto-shreds the data volume, but the preboot copy is only rewritten by a full restore | gone — the item is wrapped in the device keybag, which erase destroys |
+| stolen device, offline image of the flash | readable bytes | requires the device's passcode-bound class keys |
+| backups / restored onto another device | not backed up (preboot is outside the backup roots) | `ThisDeviceOnly` — excluded by construction |
+| another process on a stock iOS device | anything running as the same user | blocked without the package's keychain access group |
+| a process with root on the jailbroken device | readable | **readable** — see below |
+
+That last row is the honest limit, and no storage scheme changes it: a
+jailbroken device has no security boundary against root, and the entitlement
+that authorizes keychain access is ldid-fake-signable by anything that can
+already run code on the device. The keychain is not protecting the credential
+from the phone's owner-with-root; it is protecting it from everyone the phone
+might belong to after it leaves your hands — the buyer, the thief, the offline
+image. Against the live-root threat the mitigations are behavioural, not
+technical: treat stored credentials like pasted API keys, and log out of
+providers you do not need before handing the device on.
+
+Two edges of the sync itself, stated plainly:
+
+* **A crash between write and remove leaves the plaintext in place.** If the
+  wrapper is killed after Pi wrote `auth.json` but before the exit sync — a
+  `SIGKILL`, a dead ssh session, a battery cut — the file survives one run. The
+  next launch imports it into the keychain and removes it, so the worst case is
+  the plaintext sitting in a `0700`/`0600` directory until the next run, not
+  its loss.
+* **Concurrent sessions are last-writer-wins.** The keychain always receives
+  whatever the most recently exited session saw; the file is only removed by
+  the last session out. Two sessions signing in to different providers at the
+  same moment can, in principle, leave one of the two changes as the keeper —
+  the same semantics as two machines sharing a file, without anything being
+  silently dropped on the floor.
 
 ## What the package contains
 
@@ -347,9 +445,11 @@ applies here.
 | file | installed to | |
 |---|---|---|
 | `libshim.dylib` | `/var/jb/usr/local/lib/pi-native/` | the 68 KB shim, prebuilt against the iPhoneOS SDK |
+| `pi-keychain` | `/var/jb/usr/local/lib/pi-native/` | the keychain helper, prebuilt and ldid-signed with the package entitlements (re-signed in place by the `postinst`) |
+| `pi-keychain.c` | `/var/jb/usr/local/lib/pi-native/` | helper source, so it can be rebuilt on device |
 | `piios_patch.py` | `/var/jb/usr/local/lib/pi-native/` | the Mach-O patcher |
 | `shim.c` | `/var/jb/usr/local/lib/pi-native/` | shim source, so it can be rebuilt on device |
-| `entitlements.plist` | `/var/jb/usr/local/lib/pi-native/` | JIT entitlements (`dynamic-codesigning`, `com.apple.security.cs.allow-jit`, `get-task-allow`, …) for `ldid` |
+| `entitlements.plist` | `/var/jb/usr/local/lib/pi-native/` | entitlements for `ldid`: the JIT set (`dynamic-codesigning`, `com.apple.security.cs.allow-jit`, `get-task-allow`, …) plus `keychain-access-groups: com.andi.pi-coding-agent`, which is what authorizes the helper's SecItem access |
 | `version.env` | `/var/jb/usr/local/lib/pi-native/` | upstream version, pinned SHA-256s, download URL |
 | `shims/open` | `/var/jb/usr/local/lib/pi-native/` | symlink to `uiopen` |
 | `pi-native` | `/var/jb/usr/local/bin/` | the wrapper |
@@ -376,6 +476,11 @@ The runtime is produced at install time by `packaging/DEBIAN/postinst`:
    absent or half-written, then point `/var/jb/usr/local/bin/pi` at the wrapper.
    A non-symlink `pi` already there — an npm install, most likely — is kept as
    `pi-legacy`; `prerm` hands `pi` back to it on removal.
+8. Re-sign the *installed* keychain helper with the entitlements (signing only
+   the staged copy is the bug shape that produces a deb whose probe works
+   locally and fails on device), run its `probe` subcommand — advisory: a
+   failure is a loud warning, never a failed install — and look in the keychain
+   when deciding whether to print a set-a-key hint or a run-hint.
 
 No rollback copy of the previous tree is kept — the new one is verified before
 the old one is touched, and a reinstall can always re-fetch.
@@ -418,6 +523,11 @@ Pi's own `pi update self` is not disabled and does not need to be: for a Bun
 standalone install it reports `pi cannot self-update this installation` and
 changes nothing. Only the version *check* is turned off, because the advice it
 would print — download the macOS build from GitHub releases — is wrong here.
+
+Sign-ins survive updates: the keychain item is not part of the package or the
+jailbreak, so neither an upgrade of this package nor an iOS update nor a
+jailbreak reinstall touches it (`prerm` deletes it only on `purge` — see
+[Where the credential is stored](#where-the-credential-is-stored)).
 
 ### Where the packages come from
 
@@ -495,6 +605,23 @@ one later:
 4. Subprocesses — `!echo $$` in the TUI.
 5. TUI under a pty — `ssh -tt`, and let the process own the pty (piping to
    `head` on the remote side steals it).
+6. Credentials — verify by exit codes and file absence, never by printing
+   contents:
+   ```sh
+   /var/jb/usr/local/lib/pi-native/pi-keychain probe    # expect "probe: ok"
+   # place a credential (sign in with /login, or for a pure storage test:
+   printf '{"test-provider":{"type":"api","key":"sk-test"}}' \
+       | /var/jb/usr/local/lib/pi-native/pi-keychain set
+   /var/jb/usr/local/lib/pi-native/pi-keychain get >/dev/null; echo $?  # 0
+   pi -p 'reply with the single word OK'; echo $?                       # exits cleanly
+   test -e ~/.pi/agent/auth.json && echo "MIRROR LEFT BEHIND" || echo "file absent"
+   /var/jb/usr/local/lib/pi-native/pi-keychain del                      # clean up
+   ```
+   And the strongest check of all — the keychain database itself, on the data
+   volume, must never contain the JSON:
+   `sudo grep -ac sk-test /var/Keychains/keychain-2.db` → `0`. (The db is a
+   binary file, so grep counts matching "lines"; anything above zero means a
+   credential leaked to disk in the clear and the design failed.)
 
 Install with `dpkg -i`, not by side-loading, so `postinst` is exercised.
 `dpkg -V com.andi.pi-coding-agent` afterwards confirms the shipped files match;
@@ -513,6 +640,12 @@ it will not mention `runtime/`, which the postinst builds and dpkg does not own.
   upstream's tarball plus a patched executable.
 * **Image resizing is untested.** It runs through a WASM module
   (`photon_rs_bg.wasm`) in a worker, which is present and shipped.
+* **The exit sync can be skipped by a hard kill.** `SIGKILL`, a dead ssh
+  session or a battery cut after Pi wrote `auth.json` but before the wrapper's
+  after-exit sync leaves the plaintext in place until the next launch, which
+  imports it into the keychain and removes it. Ctrl+C and normal exits run the
+  sync; the window is the crash itself, and the worst case is the file sitting
+  in a `0700` directory for one run, not its loss.
 
 ## License
 

@@ -6,7 +6,7 @@ Maintainer: andi <tafilajandi@gmail.com>
 Author: Earendil Works (upstream) / iOS port by andi
 Section: Development
 Priority: optional
-Depends: zsh, bash, python3, ldid, curl, tar, coreutils, ripgrep, fd, uikittools, firmware (>= 15.0)
+Depends: zsh, bash, python3, ldid, curl, tar, coreutils, ripgrep, fd, uikittools, procps, firmware (>= 15.0)
 Recommends: git
 Icon: https://raw.githubusercontent.com/@REPO@/main/assets/icon.png
 Native-Depiction: https://@PAGES@/depiction.json
@@ -17,8 +17,12 @@ Description: Pi, the open-source agent harness, patched for iOS
  .
  Pi is an open-source coding agent that talks to any model provider you have an
  API key for -- Anthropic, OpenAI, Google, Groq, OpenRouter, a local llama.cpp
- and around twenty more. Credentials live in ~/.pi/agent/auth.json or in the
- usual environment variables, so signing in is one file and no keychain.
+ and around twenty more. Credentials from /login are kept in the iOS keychain
+ rather than in ~/.pi/agent/auth.json: the whole file -- every provider at
+ once -- is copied into a this-device-only keychain item while Pi runs and
+ taken back out when it exits, so nothing with a secret sits on the preboot
+ volume between runs. Environment-variable API keys bypass this entirely, and
+ PI_PLAINTEXT=1 restores the plain file.
  .
  Nothing else to install: no Node.js, no npm, no JavaScript runtime. Upstream's
  standalone build is Bun-compiled and self-contained, and this package patches

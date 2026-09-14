@@ -72,9 +72,14 @@ jobs:
       # Narrowed from the default of the whole directory: everything else in
       # packaging/payload/ is committed source the publish job already has from
       # its own checkout, and the default would also sweep up a stray
-      # __pycache__/ from the --check run.
+      # __pycache__/ from the --check run. pi-keychain is compiled and
+      # gitignored, so it exists only on the macOS payload runner -- forgetting
+      # it here would ship a deb whose helper is missing while every job stays
+      # green, which is exactly the failure the payload-paths split exists to
+      # prevent.
       payload-paths: |
         packaging/payload/libshim.dylib
+        packaging/payload/pi-keychain
         packaging/payload/PAYLOAD.version
     secrets:
       # Its own key, not the one that signs reallyitsandi.com and not CCForiOS's

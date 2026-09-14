@@ -62,7 +62,7 @@
           "class": "DepictionMarkdownView",
           "useSpacing": true,
           "useRawFormat": false,
-          "markdown": "Give it a key, then run it:\n\n`export ANTHROPIC_API_KEY=sk-ant-…`\n\n`pi`\n\nAny provider works the same way: `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and the rest. Or just run `pi` and use `/login`, which stores the key in `~/.pi/agent/auth.json`.\n\nNothing here touches the keychain, which is why this port needs no login helper of its own."
+          "markdown": "Give it a key, then run it:\n\n`export ANTHROPIC_API_KEY=sk-ant-…`\n\n`pi`\n\nAny provider works the same way: `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and the rest. Or just run `pi` and use `/login`.\n\nCredentials from `/login` are kept in the iOS keychain, not in a file on disk -- see the Notes tab."
         }
       ]
     },
@@ -99,28 +99,21 @@
           "class": "DepictionMarkdownView",
           "useSpacing": true,
           "useRawFormat": false,
-          "markdown": "**Sileo is the updater.** Pi's own version check is switched off, because for a standalone build it points at the macOS download, which cannot run here."
+          "markdown": "**Sign-in.** Run `pi` and use `/login`, or export an API key (`ANTHROPIC_API_KEY` and the rest -- environment variables bypass storage entirely). Credentials from `/login` are stored in the iOS keychain, not as a plain file: the whole `auth.json` blob is copied out to a this-device-only keychain item while Pi runs and taken back when it exits, so every provider is covered at once and nothing with a secret sits on disk between runs. If the keychain misbehaves on your device, `PI_PLAINTEXT=1` keeps the old plain file instead."
         },
         { "class": "DepictionSeparatorView" },
         {
           "class": "DepictionMarkdownView",
           "useSpacing": true,
           "useRawFormat": false,
-          "markdown": "**The JIT is emulated.** iOS has no `MAP_JIT` and will not execute a page while it is writable, so a small shim flips JavaScriptCore's JIT pool between writable and executable with `mprotect`. That flip is process-wide where the real API is per-thread, so the wrapper sets `BUN_JSC_useConcurrentJIT=0`, which it requires."
+          "markdown": "**Updates.** This package auto-updates Pi: when a new version ships upstream it is published to this repository, and updates arrive through your package manager. Pi's own version check is switched off, because its advice -- download the macOS build -- cannot run here. Sign-ins survive updates, iOS updates, and jailbreak reinstalls: the keychain item lives on the data volume, outside the jailbreak."
         },
         { "class": "DepictionSeparatorView" },
         {
           "class": "DepictionMarkdownView",
           "useSpacing": true,
           "useRawFormat": false,
-          "markdown": "**JavaScriptCore's gigacage is off.** It reserves 64 GB of address space and iOS refuses any single reservation over 4 GB, so Pi would not start at all otherwise."
-        },
-        { "class": "DepictionSeparatorView" },
-        {
-          "class": "DepictionMarkdownView",
-          "useSpacing": true,
-          "useRawFormat": false,
-          "markdown": "**Clipboard and modifier keys are inert.** Pi's helpers for those are native modules that link AppKit, which iOS does not have. Pi loads them inside a `try` and carries on, so nothing breaks; the features are simply absent."
+          "markdown": "**Compatibility.** Keep in mind this is patch-work for the macOS binary; not everything works 1 to 1. The JIT is emulated with `mprotect` (iOS has no `MAP_JIT`), and clipboard/modifier-key helpers are inert because they link AppKit -- Pi loads them in a `try` and carries on without them. The keychain storage has the same honest limit any storage does on a jailbroken phone: it protects credentials from a wiped, sold or stolen device, not from root on a running one."
         }
       ]
     }

@@ -47,6 +47,8 @@ GH_PAGES="${GH_PAGES:-}"
 command -v dpkg-deb >/dev/null || { echo "need dpkg-deb (brew install dpkg)"; exit 1; }
 [ -f "$PAYLOAD/libshim.dylib" ] || {
     echo "missing packaging/payload/libshim.dylib -- run tools/build-payload.sh on macOS first"; exit 1; }
+[ -f "$PAYLOAD/pi-keychain" ] || {
+    echo "missing packaging/payload/pi-keychain -- run tools/build-payload.sh on macOS first; in CI that means it must be listed in the workflow's payload-paths"; exit 1; }
 [ -f "$PAYLOAD/PAYLOAD.version" ] || {
     echo "missing packaging/payload/PAYLOAD.version -- run tools/build-payload.sh on macOS first"; exit 1; }
 
@@ -110,6 +112,8 @@ BIN="$STAGE/var/jb/usr/local/bin"
 mkdir -p "$STAGE/DEBIAN" "$LIB/shims" "$BIN"
 
 install -m 755 "$PAYLOAD/libshim.dylib"      "$LIB/libshim.dylib"
+install -m 755 "$PAYLOAD/pi-keychain"        "$LIB/pi-keychain"
+install -m 644 "$PAYLOAD/pi-keychain.c"      "$LIB/pi-keychain.c"
 install -m 644 "$PAYLOAD/piios_patch.py"     "$LIB/piios_patch.py"
 install -m 644 "$PAYLOAD/shim.c"             "$LIB/shim.c"
 install -m 644 "$PAYLOAD/entitlements.plist" "$LIB/entitlements.plist"
@@ -175,13 +179,14 @@ echo "==> $DEB ($(du -h "$DEB" | cut -f1))"
 # itself go stale.
 #
 # Compared by content, not .deb bytes -- an archive carries timestamps and
-# ordering that differ between builds of identical input. libshim.dylib and
-# md5sums are excluded for the same reason one step further down: a compiled,
-# ldid-signed binary is never byte-identical twice, so including it would fire
-# this guard on every single run. Its source, shim.c, ships in the package and
-# IS compared, so a real change to the shim is still caught. version.env is
-# compared too and is safe to compare: every hash in it is of something upstream
-# published, not of anything built here.
+# ordering that differ between builds of identical input. libshim.dylib,
+# pi-keychain and md5sums are excluded for the same reason one step further
+# down: a compiled, ldid-signed binary is never byte-identical twice, so
+# including them would fire this guard on every single run. Their sources,
+# shim.c and pi-keychain.c, ship in the package and ARE compared, so a real
+# change is still caught. version.env is compared too and is safe to compare:
+# every hash in it is of something upstream published, not of anything built
+# here.
 payload_digest() {
     local deb="$1" dir
     dir="$(mktemp -d)"
@@ -193,7 +198,8 @@ payload_digest() {
     # port lost sight of a second file called `gh`.
     ( cd "$dir/x" && find . -type f \
         ! -path './control' ! -path './md5sums' \
-        ! -path './var/jb/usr/local/lib/pi-native/libshim.dylib' -print0 | sort -z \
+        ! -path './var/jb/usr/local/lib/pi-native/libshim.dylib' \
+        ! -path './var/jb/usr/local/lib/pi-native/pi-keychain' -print0 | sort -z \
       | xargs -0 shasum -a 256 2>/dev/null ) | shasum -a 256 | cut -d' ' -f1
     rm -rf "$dir"
 }

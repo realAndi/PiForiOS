@@ -26,9 +26,21 @@
     <true/>
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
-    <!-- No keychain-access-groups. Pi keeps provider credentials in
-         ~/.pi/agent/auth.json, a plain file it writes itself, so it never
-         reaches Security.framework and asking for a keychain group would be
-         claiming access this package has no use for. -->
+    <!-- Credential storage. Pi keeps every provider credential in
+         ~/.pi/agent/auth.json, a plain file it writes itself. On a rootless
+         jailbreak $HOME sits on the preboot volume, so the pi-keychain helper
+         keeps the master copy in the keychain instead and the wrapper only
+         materialises the file while Pi runs. On iOS SecItem access is
+         authorized by the signature: without a keychain-access-groups entry
+         matching the caller, SecItemAdd returns -34018
+         (errSecMissingEntitlement) -- measured on device, an ad-hoc binary
+         gets exactly that. The group is named after this package, so it is
+         scoped to it and shared with nothing else. -->
+    <key>application-identifier</key>
+    <string>com.andi.pi-coding-agent</string>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>com.andi.pi-coding-agent</string>
+    </array>
 </dict>
 </plist>

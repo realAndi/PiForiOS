@@ -1,7 +1,7 @@
 #!/var/jb/usr/bin/zsh
 # Pi, the official darwin-arm64 standalone build patched to run on iOS.
 # Installed as pi-native; `pi` is a symlink to this. See the README in
-# https://github.com/realAndi/pi-port for why each of these is set.
+# https://github.com/realAndi/PiForiOS for why each of these is set.
 
 LIB=/var/jb/usr/local/lib/pi-native
 
@@ -9,6 +9,11 @@ LIB=/var/jb/usr/local/lib/pi-native
 # loses every setting between runs. A non-interactive `ssh host 'pi ...'` is
 # exactly the case that arrives without one.
 export HOME="${HOME:-/var/jb/var/mobile}"
+
+# auth.json is 0600 because Pi sets the mode itself; session transcripts and
+# logs land with default perms. Keep those out of group/other too -- sessions
+# contain the project's source and everything said in the TUI.
+umask 077
 
 # REQUIRED. JSC's JIT pool is flipped between RW and RX with mprotect (iOS has
 # no MAP_JIT and refuses to execute a writable page). That flip is process-wide
@@ -58,9 +63,149 @@ done
 # `open` on iOS to shadow, and the agent's own shell commands inherit it too.
 export PATH="$LIB/shims:$PATH"
 
-# runtime/ is the upstream tarball, patched: the binary plus the theme, assets,
-# docs and wasm it resolves relative to itself, and the libshim.dylib it loads
-# as @executable_path/libshim.dylib. The postinst builds it; dpkg does not know
-# about it. Exec'd by absolute path and never cd'd into, because Pi takes the
-# working directory as the project it is working on.
-exec "$LIB/runtime/pi" "$@"
+# --- credentials -------------------------------------------------------------
+#
+# Pi keeps every provider credential in $HOME/.pi/agent/auth.json, a plain JSON
+# file it reads and writes itself (on /login, on token refresh, when a provider
+# is added or removed). On a rootless jailbreak $HOME sits on the preboot
+# volume, so that file is the one long-lived secret this port would otherwise
+# leave on disk. The master copy therefore lives in the iOS keychain, via the
+# pi-keychain helper in $LIB, and the file is only a mirror for the duration of
+# a run:
+#
+#   before launching Pi: keychain -> auth.json, unless that file is already
+#     byte-identical. A leftover file that differs is treated as newer -- it is
+#     what a run that was killed before it could sync wrote -- and is imported.
+#     An auth.json holding exactly "{}" is the exception: that is what Pi
+#     writes when a credential operation finds the file missing, so it is a
+#     marker of "there was no file", not of a deliberate logout, and it never
+#     displaces a populated keychain.
+#   after Pi exits: if auth.json changed, store it back (last writer wins --
+#     the keychain is always updated), then remove the file, so nothing with a
+#     secret sits here between runs. Removal waits until no other Pi process
+#     is running: an earlier exit leaves the file for the session still using
+#     it, and that session's own exit repeats the same steps.
+#
+# The blob is the whole file, provider-agnostic: every provider is covered at
+# once and this code never parses it.
+#
+# PI_PLAINTEXT=1 skips all of it: the file is the store and stays put, exactly
+# as upstream behaves. Escape hatch for a device whose keychain misbehaves;
+# the postinst probe warns about that at install time.
+PI_PLAINTEXT_MODE=0
+[ "${PI_PLAINTEXT-}" = 1 ] && PI_PLAINTEXT_MODE=1
+
+AUTH_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+AUTH_JSON="$AUTH_DIR/auth.json"
+KEYCHAIN="$LIB/pi-keychain"
+RUNTIME="$LIB/runtime/pi"
+
+kc_warn() { print -u2 -- "pi: $*"; }
+
+# Byte comparison. Hashes rather than cmp because cmp is diffutils, which is
+# not a dependency; sha256sum is (coreutils), with the same shasum fallback
+# the postinst uses.
+blob_hash() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" 2>/dev/null | cut -d' ' -f1
+    else shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1; fi
+}
+
+# Pi recreates auth.json as "{}" whenever a credential operation finds it
+# missing. Whitespace-tolerant because it is matched by shape, not by writer.
+auth_file_empty() {
+    [ "$(tr -d '[:space:]' < "$1" 2>/dev/null)" = "{}" ]
+}
+
+sync_before_launch() {
+    [ "$PI_PLAINTEXT_MODE" = 0 ] || return 0
+    # Leftovers from a run killed mid-sync: a partial mirror copy. Suffixed
+    # with $$, so concurrent launches cannot clobber one another's. Redirected
+    # because an empty glob would hand `rm -f` no operands at all.
+    rm -f "$AUTH_DIR"/.auth.json.kcsync.*(N) 2>/dev/null
+    local tmp="$AUTH_DIR/.auth.json.kcsync.$$"
+    mkdir -p "$AUTH_DIR" 2>/dev/null
+    "$KEYCHAIN" get > "$tmp"                  # 0 blob / 3 none / 1 broken; stderr kept
+    case $? in
+        0)
+            if [ -f "$AUTH_JSON" ] && [ "$(blob_hash "$tmp")" = "$(blob_hash "$AUTH_JSON")" ]; then
+                rm -f "$tmp"                  # already current; leave the mtime alone
+            elif [ -f "$AUTH_JSON" ] && auth_file_empty "$AUTH_JSON"; then
+                mv -f "$tmp" "$AUTH_JSON"     # a recreated {} never beats the keychain
+            elif [ -f "$AUTH_JSON" ]; then
+                # The file differs: a run died before it could sync. It is the
+                # newest thing Pi wrote, so it wins; the file stays in place
+                # for this run and is removed at exit like any other.
+                rm -f "$tmp"
+                "$KEYCHAIN" set < "$AUTH_JSON" \
+                    || kc_warn "auth.json is newer than the keychain copy but could not be stored; it stays in place for now"
+            else
+                mv -f "$tmp" "$AUTH_JSON"     # materialise the mirror
+            fi
+            ;;
+        3)
+            rm -f "$tmp"
+            # Nothing in the keychain. A file left by a previous install, or by
+            # a run that died before syncing, is imported right here.
+            if [ -f "$AUTH_JSON" ] && ! auth_file_empty "$AUTH_JSON"; then
+                "$KEYCHAIN" set < "$AUTH_JSON" \
+                    || kc_warn "auth.json could not be stored in the keychain; it stays in place for now"
+            fi
+            ;;
+        *)
+            rm -f "$tmp"
+            # The helper printed the reason (a missing entitlements signature
+            # names itself). Pi still runs: env-var keys work, and an existing
+            # auth.json is used as it is.
+            kc_warn "credential store unreadable; using auth.json as it is (PI_PLAINTEXT=1 skips the keychain)"
+            ;;
+    esac
+}
+
+sync_after_exit() {
+    [ "$PI_PLAINTEXT_MODE" = 0 ] || return 0
+    rm -f "$AUTH_DIR"/.auth.json.kcsync.*(N) 2>/dev/null
+    if [ -f "$AUTH_JSON" ]; then
+        local tmp="$AUTH_DIR/.auth.json.kcsync.$$"
+        local store=1
+        "$KEYCHAIN" get > "$tmp" 2>/dev/null
+        case $? in
+            0) [ "$(blob_hash "$tmp")" = "$(blob_hash "$AUTH_JSON")" ] && store=0 ;;
+            3) auth_file_empty "$AUTH_JSON" && store=0 ;;
+            *) store=2 ;;                    # cannot tell; write anyway, set is authoritative
+        esac
+        rm -f "$tmp"
+        if [ "$store" != 0 ]; then
+            if ! "$KEYCHAIN" set < "$AUTH_JSON"; then
+                kc_warn "auth.json kept in place: it could not be stored in the keychain"
+                return 0                     # never remove the only copy
+            fi
+        fi
+    fi
+    # Only the last session out takes the file away. pgrep is the conservative
+    # direction in both of its failure modes: if it is missing, or if it cannot
+    # see Pi's processes, no removal happens and the next exit tries again.
+    if command -v pgrep >/dev/null 2>&1 && pgrep -f "$RUNTIME" >/dev/null 2>&1; then
+        return 0
+    fi
+    rm -f "$AUTH_JSON"
+    # proper-lockfile leaves auth.json.lock behind when a run is killed while
+    # it holds Pi's credential lock, and a stale one blocks Pi's next credential
+    # operation. Safe to remove here: a live lock would mean a running Pi, and
+    # pgrep just said there is none.
+    rm -rf "$AUTH_JSON.lock"
+}
+
+if [ "$PI_PLAINTEXT_MODE" = 1 ]; then
+    # Old behaviour, byte for byte: hand the terminal straight over and let
+    # Pi treat auth.json as the store it always was.
+    exec "$RUNTIME" "$@"
+fi
+
+sync_before_launch
+
+# Not exec'd on purpose: the wrapper has to outlive Pi to run the exit sync.
+# One idle zsh per session is the price; a plaintext run execs above.
+"$RUNTIME" "$@"
+rc=$?
+sync_after_exit
+exit $rc

@@ -25,7 +25,7 @@ sha256_of() {
 # package name that is wrong for this bootstrap -- both worth failing on now,
 # with the name, rather than part-way through a 31 MB download.
 missing=""
-for tool in curl tar python3 ldid df awk mktemp install; do
+for tool in curl tar python3 ldid df awk mktemp install tr pgrep; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 \
@@ -90,6 +90,12 @@ ldid "-S$LIB/entitlements.plist" "$WORK/pi/pi" || die "ldid signing failed"
 # copy would let the smoke test pass on a layout that is not what ends up on
 # disk. Sign in place first, then stage from it, so the test is faithful.
 ldid -S "$LIB/libshim.dylib" 2>/dev/null || true
+# The keychain helper needs the same entitlements: its keychain-access-groups
+# entry is what authorizes SecItem access, and without it SecItemAdd fails with
+# -34018 (measured on device). Sign the installed copy, same reasoning as the
+# shim -- signing only the staged copy is what produced a sibling deb whose
+# probe worked locally and failed on device.
+ldid -S"$LIB/entitlements.plist" "$LIB/pi-keychain" 2>/dev/null || true
 install -m 755 "$LIB/libshim.dylib" "$WORK/pi/libshim.dylib"
 
 say "verifying"
@@ -123,8 +129,26 @@ ln -sfn "$BIN/pi-native" "$BIN/pi"
 # Cheap, and it is the only thing that proves what the user will actually run.
 out=$("$BIN/pi-native" --version 2>&1) || die "installed binary does not run: $out"
 
-say "installed Pi $PI_VERSION -- run: pi"
-if [ ! -r "$PREFIX/var/mobile/.pi/agent/auth.json" ]; then
+# Say something honest about this device's keychain while we are here. Advisory:
+# a broken keychain does not make the package unusable (PI_PLAINTEXT=1 keeps
+# credentials in a 0600 file), but the user should hear it now, not at /login.
+if out=$("$LIB/pi-keychain" probe 2>&1) && [ "$out" = "probe: ok" ]; then
+    say "keychain accessible -- /login credentials are stored there"
+else
+    say "WARNING: keychain probe failed: $out"
+    say "  sign-in still works with PI_PLAINTEXT=1 (0600 file)"
+fi
+
+# $HOME here is root's -- the postinst runs under sudo -- so look where a
+# credential actually lives: the keychain master first (the helper exits 0 with
+# the blob, 3 when nothing is stored), then the file a PI_PLAINTEXT=1 user or
+# an interrupted first sync would have.
+USERHOME=/var/jb/var/mobile
+if "$LIB/pi-keychain" get >/dev/null 2>&1 \
+   || [ -r "$USERHOME/.pi/agent/auth.json" ]; then
+    say "installed Pi $PI_VERSION -- run: pi"
+else
+    say "installed Pi $PI_VERSION"
     say "Set a provider key first, e.g."
     say "  export ANTHROPIC_API_KEY=sk-ant-...    (or run 'pi' and use /login)"
 fi

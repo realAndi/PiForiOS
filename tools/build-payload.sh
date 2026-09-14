@@ -5,6 +5,7 @@
 #
 # Produces, in packaging/payload/:
 #   libshim.dylib     the shim, compiled against the iPhoneOS SDK and ldid-signed
+#   pi-keychain       the keychain helper, same SDK, same entitlements
 #   PAYLOAD.version   the upstream version, read by build-deb.sh
 #
 # Needs the iPhoneOS SDK, so it has to run on macOS. The result is a ~68 KB
@@ -40,6 +41,19 @@ VERSION="${VERSION#v}"
 
 "$ROOT/tools/build-shim.sh"
 
+# The keychain helper: same SDK, same entitlements. The keychain-access-groups
+# entry is the whole point -- without it SecItemAdd fails with -34018, which is
+# exactly what the postinst probe and the wrapper surface if this signature
+# goes missing. The compiled binary is never byte-identical twice, which the
+# digest guard in build-deb.sh already accounts for; the .c source ships beside
+# it and is what real changes are caught by.
+echo "==> building pi-keychain"
+xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 \
+    -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
+    -framework Security -framework CoreFoundation -O2 -Wall \
+    "$PAYLOAD/pi-keychain.c" -o "$PAYLOAD/pi-keychain"
+ldid -S"$PAYLOAD/entitlements.plist" "$PAYLOAD/pi-keychain"
+
 # build-shim.sh only warns when ldid is missing, so that it stays runnable on
 # the device where signing may be done separately. That makes this assertion the
 # thing standing between an unsigned dylib and a package that cannot load on
@@ -55,4 +69,5 @@ printf '%s\n' "$VERSION" > "$PAYLOAD/PAYLOAD.version"
 
 echo
 echo "==> packaging/payload/libshim.dylib  $(du -h "$PAYLOAD/libshim.dylib" | cut -f1)  for Pi $VERSION"
+echo "==> packaging/payload/pi-keychain     $(du -h "$PAYLOAD/pi-keychain" | cut -f1)"
 echo "    next: tools/build-deb.sh"

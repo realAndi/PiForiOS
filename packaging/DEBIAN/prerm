@@ -18,4 +18,13 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
         [ -e "$BIN/pi-legacy" ] && mv "$BIN/pi-legacy" "$BIN/pi" || true
     fi
 fi
+
+if [ "$1" = "purge" ]; then
+    # Purge means purge: the credential's keychain master does not live under
+    # $LIB, so dpkg cannot remove it. `remove` keeps it -- an upgrade or a
+    # reinstall must stay signed in, for every provider at once. A
+    # PI_PLAINTEXT=1 auth.json is Pi's own file in the user's home; dpkg never
+    # owned it and this does not touch it.
+    "$LIB/pi-keychain" del >/dev/null 2>&1 || true
+fi
 exit 0
