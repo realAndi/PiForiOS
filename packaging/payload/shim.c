@@ -381,13 +381,17 @@ static void chain(int sig, siginfo_t *si, void *ctx) {
         pthread_sigmask(SIG_SETMASK, &saved, NULL);
         return;
     }
-    /* Default action: stand aside and let the instruction fault again, so the
-       process dies of the signal it would have died of without the shim. */
+    /* Default action: restore it for real and raise the signal again. It stays
+       pending until this handler returns, then kills the process the way it
+       would have without the shim. Returning alone is not enough: a signal
+       that was sent rather than faulted -- kill(), or Node resetting its
+       handler and calling raise() -- would never arrive a second time. */
     struct sigaction dfl;
     memset(&dfl, 0, sizeof dfl);
     dfl.sa_handler = SIG_DFL;
     sigemptyset(&dfl.sa_mask);
     real_sigaction(sig, &dfl, NULL);
+    raise(sig);
 }
 
 static void jit_fault(int sig, siginfo_t *si, void *ctx) {
