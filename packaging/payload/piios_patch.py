@@ -42,14 +42,21 @@ IOS_SDK   = (17, 0, 0)
 # it links, on device.
 #
 # REQUIRED are the three genuinely missing symbols plus _mmap, which is not
-# missing but has to route through the shim so MAP_JIT can be intercepted. If
-# any of these is absent from the import table the binary has changed shape and
+# missing but has to route through the shim so MAP_JIT can be intercepted, and
+# _sigaction, explained below. If any of these is absent from the import table
+# the binary has changed shape and
 # patching it would produce something that loads and then dies, so we refuse.
 REQUIRED = [
     "_mmap",
     "___clear_cache",
     "_pthread_jit_write_protect_np",
     "_pthread_jit_write_protect_supported_np",
+    # The shim repairs JIT page faults in a SIGBUS/SIGSEGV handler that has to
+    # run before Bun's crash handler. It stays first only because Bun's own
+    # sigaction() calls land in the shim, which records Bun's handler and chains
+    # to it. Without this import repointed, Bun would replace that handler and
+    # the first execution of JIT code would kill the process.
+    "_sigaction",
 ]
 
 # OPTIONAL are symbols the shim can supply but which this Bun build does not
@@ -58,6 +65,12 @@ REQUIRED = [
 # it appears rather than failing, and do not fail when it does not.
 OPTIONAL = [
     "_posix_spawn_file_actions_addfchdir",
+    # signal() would install a SIGBUS/SIGSEGV handler past the interposed
+    # sigaction(); mprotect() keeps the shim's per-page JIT state honest if
+    # anything else changes a pool page's protection. Both are imported by
+    # Pi 0.85.1, but neither is load-bearing the way sigaction is.
+    "_signal",
+    "_mprotect",
 ]
 
 SHIMMED = REQUIRED + OPTIONAL

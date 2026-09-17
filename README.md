@@ -140,12 +140,14 @@ Python with no cctools dependency so it can run on the phone (Procursus ships
 **1. `LC_BUILD_VERSION` platform → iOS (2), minos 15.0, sdk 17.0.**
 On its own this is enough for dyld to accept the binary.
 
-**2. Link the shim and repoint four imports at it.**
+**2. Link the shim and repoint imports at it.**
 The patcher appends an `LC_LOAD_DYLIB` for `@executable_path/libshim.dylib`
 (ordinal 5, after the four existing dylibs) and, inside
-`LC_DYLD_CHAINED_FIXUPS`, rewrites the `lib_ordinal` of four imports from 4
-(libSystem) to 5 (the shim): the three missing symbols above plus `_mmap`, which
-is not missing but which the JIT emulation has to intercept (see below).
+`LC_DYLD_CHAINED_FIXUPS`, rewrites the `lib_ordinal` of these imports from 4
+(libSystem) to 5 (the shim): the three missing symbols above, plus `_mmap` and
+`_sigaction`, which are not missing but which the JIT emulation has to intercept
+(see below). `_signal` and `_mprotect` are repointed too when present. A binary
+that lacks any of the required ones is refused.
 
 `DYLD_INSERT_LIBRARIES` cannot do this job, for two independent reasons: dyld
 ignores every `DYLD_*` variable for a binary carrying entitlements (and this one
@@ -256,17 +258,64 @@ it will let `mprotect` flip a page between RW and RX. That is enough.
 
 **JIT memory.**
 
-* `mmap` — when called with `MAP_JIT` (0x0800), strips the flag, maps the region
-  RW instead of RWX, and records it. This is JSC's executable pool.
-* `pthread_jit_write_protect_np(enabled)` — `mprotect`s every recorded region to
-  RX when `enabled` is 1 ("done writing, must be executable") and RW when 0
-  ("about to write").
-* `pthread_jit_write_protect_supported_np()` — returns 1.
+The real `pthread_jit_write_protect_np` is per thread: the thread writing code
+sees the pool read-write while every other thread keeps executing it. iOS can
+only change a page's protection for the whole process. So the shim tracks each
+16 KB page of the pool as RW or RX and lets faults move them:
 
-The real `mmap` is resolved with `dlsym` on an explicit libSystem handle, not
-`RTLD_DEFAULT`: the default search walks the global list and finds the shim's
-own `mmap` first. A guard aborts with `[piios] fatal: mmap resolved to the shim
-itself` rather than recursing, should that ever happen.
+| event | what the shim does |
+|---|---|
+| `mmap` with `MAP_JIT` | strips the flag, maps the pool RW instead of RWX, records every page as RW |
+| `pthread_jit_write_protect_np(0)` | marks this thread as writing; changes no protection |
+| write fault by a writing thread | makes that one page RW and counts the thread as its writer |
+| execute fault | waits until no thread is still writing the page, makes it RX |
+| `pthread_jit_write_protect_np(1)` | drops this thread's writer counts; pages stay as they are |
+
+After a repair the faulting instruction runs again. An executor never runs a
+page mid-write, a writer never waits, and a page that is only ever executed
+stops faulting after its first run.
+
+The faults arrive as `SIGBUS` or `SIGSEGV`, which Bun also claims for its crash
+handler. The shim installs its handler from a library constructor, before
+`main`, and interposes `sigaction` and `signal` for those two signals, so Bun's
+handler is recorded and chained to rather than installed over the shim's. Any
+fault outside the pool, or one that is not a write-scope write or an
+execution, goes to Bun unchanged. Checked on device: a null dereference still
+prints Bun's `panic: Segmentation fault`, and a WebAssembly out-of-bounds access
+still throws `RuntimeError`. `mprotect` is interposed only so that a
+protection change made by anything else to a pool page updates the shim's
+record of it.
+
+The first version of the shim `mprotect`ed the whole 512 MB pool on every call
+instead. That is process-wide, so any second thread that writes code pulled the
+pool out from under the main thread. Pi extensions start worker threads, each
+with its own JSC VM and its own compiler, and the result was
+`panic: Bus error`. Measured on an iPhone 15 Pro, iOS 17.3:
+
+| test | old flip | page faults |
+|---|---|---|
+| one busy worker, busy main thread | 0 of 5 survived | 20 of 20 |
+| four workers with polymorphic code, busy main thread | 0 of 5 | 20 of 20 |
+| two-minute TUI session with pi-subagents, which starts a worker after 60 s | bus error | no crash, 3 of 3 |
+
+In the two worker rows, half the runs had JSC's concurrent JIT turned back on.
+The page-fault version is also faster, because it no longer changes the
+protection of 512 MB twice for every write:
+
+| JIT on, `BUN_JSC_useConcurrentJIT=0` | old flip | page faults |
+|---|---|---|
+| JSON round trips | 157–171 ms | 131–137 ms |
+| tight loop | 105–113 ms | 86–93 ms |
+| property access on mixed shapes | 76–89 ms | 63–65 ms |
+
+`pi --version` repairs about 1,500 faults in total. Set `PIIOS_SHIM_DEBUG=1`
+to print the pool mapping at startup and the fault counts at exit.
+
+The real `mmap`, `mprotect` and `sigaction` are resolved with `dlsym` on an
+explicit libSystem handle, not `RTLD_DEFAULT`: the default search walks the
+global list and finds the shim's own definitions first. A guard aborts with
+`[piios] fatal: cannot resolve libSystem's ...` rather than recursing, should
+that ever happen.
 
 **The missing symbol.**
 
@@ -277,25 +326,21 @@ The shim also defines `posix_spawn_file_actions_addfchdir`, which Pi 0.85.1 does
 not import but Claude Code's newer Bun does. The patcher treats it as optional
 and repoints it only if it turns up, so a Bun bump does not need a new shim.
 
-Set `PIIOS_SHIM_DEBUG=1` to have the shim print the JIT pool mapping and any
-`mprotect` failure to stderr.
+### The concurrent JIT setting
 
-### The one load-bearing setting
-
-The real `pthread_jit_write_protect_np` is **per-thread**; `mprotect` is
-**process-wide**. With JSC's concurrent JIT enabled, a background compiler
-thread flips the pool to RW while the main thread is executing from it, and Bun
-dies with `panic: Bus error`.
-
-The wrapper therefore sets:
+The wrapper sets:
 
 ```
 BUN_JSC_useConcurrentJIT=0
 ```
 
-Compilation happens on the mutator thread instead, so nothing flips the pool
-underneath running code. Baseline, DFG and FTL all stay enabled; only the
-concurrency does not. **Never drop this setting.**
+With the old whole-pool flip this was load-bearing: JSC's background compiler
+thread flipped the pool to RW while the main thread executed from it. The
+page-fault emulation above handles any number of writing threads, and the
+worker tests pass with concurrent compilation on as well. The setting stays
+anyway until a long interactive session has been run with it off, because a
+compiler thread writes far more often than a worker does. Baseline, DFG and FTL
+all stay enabled either way; only the concurrency is off.
 
 ### Runtime environment
 
@@ -593,6 +638,7 @@ libraries.
 one later:
 
 1. `pi --version` / `pi --help` — does the runtime come up at all as a bare CLI?
+   `PIIOS_SHIM_DEBUG=1 pi --version` should end with a `JIT faults` line.
    Check stderr is clean and `cwd` is preserved. To separate "the shim loaded"
    from "the JIT emulation works", run `BUN_JSC_dumpOptions=2 pi --version` and
    look for `useJIT=true` and `useConcurrentJIT=false`.
